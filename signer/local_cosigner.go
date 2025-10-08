@@ -1,7 +1,6 @@
 package signer
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -222,7 +221,16 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 
 	// Check for consensus lock violations before proceeding
 	if err := ccs.lastSignState.ValidateConsensusLock(hrst.HRSKey(), req.SignBytes); err != nil {
-		return res, fmt.Errorf("consensus lock violation: %w", err)
+		// Log the specific consensus lock violation with context
+		cosigner.logger.Error("Consensus lock violation in local cosigner",
+			"chain_id", chainID,
+			"height", hrst.Height,
+			"round", hrst.Round,
+			"step", hrst.Step,
+			"error", err,
+		)
+		// Return the specific consensus lock violation error with full details
+		return res, err
 	}
 
 	// This function has multiple exit points.  Only start time can be guaranteed
@@ -298,45 +306,7 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 	}
 
 	// Handle consensus lock updates according to Tendermint rules
-	if hrst.Step == stepPrecommit {
-		// Extract the block hash from the sign bytes
-		blockHash := extractBlockHashFromSignBytes(req.SignBytes, hrst.Step)
-		if blockHash != nil {
-			// Rule 1.2: If PRECOMMIT for V' is signed in round R' > R where V' != V,
-			// then lock on V' instead for all rounds R'' > R'
-			if hrst.Round > ccs.lastSignState.ConsensusLock.Round &&
-				ccs.lastSignState.ConsensusLock.IsLocked() &&
-				!bytes.Equal(blockHash, ccs.lastSignState.ConsensusLock.Value) {
-				// Release old lock and set new lock on V'
-				signStateConsensus.ConsensusLock = ConsensusLock{
-					Height:    hrst.Height,
-					Round:     hrst.Round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			} else if !ccs.lastSignState.ConsensusLock.IsLocked() {
-				// First lock for this height
-				signStateConsensus.ConsensusLock = ConsensusLock{
-					Height:    hrst.Height,
-					Round:     hrst.Round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			} else {
-				// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
-				signStateConsensus.ConsensusLock = ccs.lastSignState.ConsensusLock
-			}
-		}
-	} else {
-		// For non-PRECOMMIT steps, only clear lock if moving to different height
-		// Locks persist for all future rounds within the same height
-		if hrst.Height != ccs.lastSignState.ConsensusLock.Height {
-			signStateConsensus.ConsensusLock = ConsensusLock{}
-		} else {
-			// Preserve existing lock
-			signStateConsensus.ConsensusLock = ccs.lastSignState.ConsensusLock
-		}
-	}
+	signStateConsensus.ConsensusLock = updateConsensusLock(ccs.lastSignState.ConsensusLock, hrst.HRSKey(), req.SignBytes)
 
 	err = ccs.lastSignState.Save(signStateConsensus, &cosigner.pendingDiskWG)
 

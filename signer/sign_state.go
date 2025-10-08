@@ -256,40 +256,7 @@ func (signState *SignState) blockDoubleSign(ssc SignStateConsensus) (*SignState,
 	signState.VoteExtensionSignature = ssc.VoteExtensionSignature
 
 	// Handle consensus lock updates according to Tendermint rules
-	if ssc.Step == stepPrecommit {
-		// Extract the block hash from the sign bytes
-		blockHash := extractBlockHashFromSignBytes(ssc.SignBytes, ssc.Step)
-		if blockHash != nil {
-			// Rule 1.2: If PRECOMMIT for V' is signed in round R' > R where V' != V,
-			// then lock on V' instead for all rounds R'' > R'
-			if ssc.Round > signState.ConsensusLock.Round &&
-				signState.ConsensusLock.IsLocked() &&
-				!bytes.Equal(blockHash, signState.ConsensusLock.Value) {
-				// Release old lock and set new lock on V'
-				signState.ConsensusLock = ConsensusLock{
-					Height:    ssc.Height,
-					Round:     ssc.Round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			} else if !signState.ConsensusLock.IsLocked() {
-				// First lock for this height
-				signState.ConsensusLock = ConsensusLock{
-					Height:    ssc.Height,
-					Round:     ssc.Round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			}
-			// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
-		}
-	} else {
-		// For non-PRECOMMIT steps, only clear lock if moving to different height
-		// Locks persist for all future rounds within the same height
-		if ssc.Height != signState.ConsensusLock.Height {
-			signState.ConsensusLock = ConsensusLock{}
-		}
-	}
+	signState.ConsensusLock = updateConsensusLock(signState.ConsensusLock, ssc.HRSKey(), ssc.SignBytes)
 
 	return signState.lockedCopy(), nil
 }
@@ -660,6 +627,32 @@ func newConsensusLockViolationError(lockedValue []byte, requestedValue []byte, h
 	}
 }
 
+// ConsensusLockStepViolationError represents an error when trying to sign a step that violates consensus lock rules
+type ConsensusLockStepViolationError struct {
+	msg string
+}
+
+func (e *ConsensusLockStepViolationError) Error() string { return e.msg }
+
+func newConsensusLockStepViolationError(step int8, height int64, round int64) *ConsensusLockStepViolationError {
+	return &ConsensusLockStepViolationError{
+		msg: fmt.Sprintf("consensus lock step violation: cannot sign step %d at height %d round %d due to existing lock",
+			step, height, round),
+	}
+}
+
+// IsConsensusLockViolationError checks if the error is a consensus lock violation
+func IsConsensusLockViolationError(err error) bool {
+	_, ok := err.(*ConsensusLockViolationError)
+	return ok
+}
+
+// IsConsensusLockStepViolationError checks if the error is a consensus lock step violation
+func IsConsensusLockStepViolationError(err error) bool {
+	_, ok := err.(*ConsensusLockStepViolationError)
+	return ok
+}
+
 // ValidateConsensusLock checks if the requested signing operation violates any existing consensus lock
 func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) error {
 	signState.mu.RLock()
@@ -726,28 +719,48 @@ func extractBlockHashFromSignBytes(signBytes []byte, step int8) []byte {
 	return signBytes[:32] // Placeholder - should be replaced with proper Tendermint parsing
 }
 
-// UpdateConsensusLock updates the consensus lock based on the Tendermint consensus rules
-func (signState *SignState) UpdateConsensusLock(hrs HRSKey, signBytes []byte) {
-	signState.mu.Lock()
-	defer signState.mu.Unlock()
-
+// updateConsensusLock updates the consensus lock based on Tendermint rules
+// This is a helper function that can be used by both SignState and other components
+func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byte) ConsensusLock {
 	// Only update lock for PRECOMMIT steps (step 3)
 	if hrs.Step != stepPrecommit {
-		return
+		// For non-PRECOMMIT steps, only clear lock if moving to different height
+		// Locks persist for all future rounds within the same height
+		if hrs.Height != existingLock.Height {
+			return ConsensusLock{}
+		}
+		return existingLock
 	}
 
 	// Extract the block hash from the sign bytes
 	blockHash := extractBlockHashFromSignBytes(signBytes, hrs.Step)
 	if blockHash == nil {
-		return
+		return existingLock
 	}
 
-	// Update the consensus lock
-	signState.ConsensusLock = ConsensusLock{
-		Height:    hrs.Height,
-		Round:     hrs.Round,
-		Value:     blockHash,
-		ValueType: "block", // or "nil" if it's a nil vote
+	// Rule 1.2: If PRECOMMIT for V' is signed in round R' > R where V' != V,
+	// then lock on V' instead for all rounds R'' > R'
+	if hrs.Round > existingLock.Round &&
+		existingLock.IsLocked() &&
+		!bytes.Equal(blockHash, existingLock.Value) {
+		// Release old lock and set new lock on V'
+		return ConsensusLock{
+			Height:    hrs.Height,
+			Round:     hrs.Round,
+			Value:     blockHash,
+			ValueType: "block",
+		}
+	} else if !existingLock.IsLocked() {
+		// First lock for this height
+		return ConsensusLock{
+			Height:    hrs.Height,
+			Round:     hrs.Round,
+			Value:     blockHash,
+			ValueType: "block",
+		}
+	} else {
+		// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
+		return existingLock
 	}
 }
 

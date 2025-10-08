@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestConsensusLockBasic(t *testing.T) {
 
 	// Test updating lock on PRECOMMIT
 	blockHash := []byte("new_block_hash_123456789012345678901234567890") // 32 bytes
-	signState.UpdateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, blockHash)
+	signState.ConsensusLock = updateConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, blockHash)
 
 	if !signState.ConsensusLock.IsLocked() {
 		t.Error("Expected consensus lock to be set after PRECOMMIT")
@@ -94,6 +95,53 @@ func TestConsensusLockValidationWithLock(t *testing.T) {
 	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentBlockBytes)
 	if err != nil {
 		t.Errorf("Expected no error when signing at different height, got: %v", err)
+	}
+}
+
+func TestConsensusLockErrorTypes(t *testing.T) {
+	// Create a sign state with a lock
+	lockedValue := []byte("locked_block_hash_123456789012345678901234567890")
+	signState := &SignState{
+		Height: 100,
+		Round:  5,
+		Step:   stepPrecommit,
+		ConsensusLock: ConsensusLock{
+			Height:    100,
+			Round:     5,
+			Value:     lockedValue[:32], // First 32 bytes
+			ValueType: "block",
+		},
+	}
+
+	// Test that we get a ConsensusLockViolationError for conflicting values
+	differentBlockBytes := []byte("different_block_hash_123456789012345678901234567890")
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes)
+	if err == nil {
+		t.Error("Expected consensus lock violation error, got nil")
+	}
+
+	// Test that it's specifically a ConsensusLockViolationError
+	if !IsConsensusLockViolationError(err) {
+		t.Errorf("Expected ConsensusLockViolationError, got %T", err)
+	}
+
+	// Test that the error message contains the expected information
+	expectedMsg := "consensus lock violation: locked on value"
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Errorf("Expected error message to contain '%s', got: %s", expectedMsg, err.Error())
+	}
+
+	// Test that we don't get an error for the same value
+	sameBlockBytes := []byte("locked_block_hash_123456789012345678901234567890")
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes)
+	if err != nil {
+		t.Errorf("Expected no error for same value, got: %v", err)
+	}
+
+	// Test that we don't get an error for different height
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentBlockBytes)
+	if err != nil {
+		t.Errorf("Expected no error for different height, got: %v", err)
 	}
 }
 

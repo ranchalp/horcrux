@@ -675,8 +675,16 @@ func (pv *ThresholdValidator) Sign(
 	// Check for consensus lock violations before proceeding
 	css := pv.mustLoadChainState(chainID)
 	if err := css.lastSignState.ValidateConsensusLock(block.HRSKey(), signBytes); err != nil {
-		log.Error("Consensus lock violation detected", "error", err)
-		return nil, nil, stamp, fmt.Errorf("consensus lock violation: %w", err)
+		// Log the specific consensus lock violation with detailed context
+		log.Error("Consensus lock violation detected in threshold validator",
+			"chain_id", chainID,
+			"height", height,
+			"round", round,
+			"step", step,
+			"error", err,
+		)
+		// Return the specific consensus lock violation error with full details
+		return nil, nil, stamp, err
 	}
 
 	// Keep track of the last block that we began the signing process for. Only allow one attempt per block
@@ -967,45 +975,7 @@ func (pv *ThresholdValidator) Sign(
 	}
 
 	// Handle consensus lock updates according to Tendermint rules
-	if step == stepPrecommit {
-		// Extract the block hash from the sign bytes
-		blockHash := extractBlockHashFromSignBytes(signBytes, step)
-		if blockHash != nil {
-			// Rule 1.2: If PRECOMMIT for V' is signed in round R' > R where V' != V,
-			// then lock on V' instead for all rounds R'' > R'
-			if round > css.lastSignState.ConsensusLock.Round &&
-				css.lastSignState.ConsensusLock.IsLocked() &&
-				!bytes.Equal(blockHash, css.lastSignState.ConsensusLock.Value) {
-				// Release old lock and set new lock on V'
-				newLss.SignStateConsensus.ConsensusLock = ConsensusLock{
-					Height:    height,
-					Round:     round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			} else if !css.lastSignState.ConsensusLock.IsLocked() {
-				// First lock for this height
-				newLss.SignStateConsensus.ConsensusLock = ConsensusLock{
-					Height:    height,
-					Round:     round,
-					Value:     blockHash,
-					ValueType: "block",
-				}
-			} else {
-				// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
-				newLss.SignStateConsensus.ConsensusLock = css.lastSignState.ConsensusLock
-			}
-		}
-	} else {
-		// For non-PRECOMMIT steps, only clear lock if moving to different height
-		// Locks persist for all future rounds within the same height
-		if height != css.lastSignState.ConsensusLock.Height {
-			newLss.SignStateConsensus.ConsensusLock = ConsensusLock{}
-		} else {
-			// Preserve existing lock
-			newLss.SignStateConsensus.ConsensusLock = css.lastSignState.ConsensusLock
-		}
-	}
+	newLss.SignStateConsensus.ConsensusLock = updateConsensusLock(css.lastSignState.ConsensusLock, block.HRSKey(), signBytes)
 
 	// Err will be present if newLss is not above high watermark
 	css.lastSignStateMutex.Lock()
