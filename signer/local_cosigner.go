@@ -1,6 +1,7 @@
 package signer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -219,6 +220,11 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 		return res, err
 	}
 
+	// Check for consensus lock violations before proceeding
+	if err := ccs.lastSignState.ValidateConsensusLock(hrst.HRSKey(), req.SignBytes); err != nil {
+		return res, fmt.Errorf("consensus lock violation: %w", err)
+	}
+
 	// This function has multiple exit points.  Only start time can be guaranteed
 	metricsTimeKeeper.SetPreviousLocalSignStart(time.Now())
 
@@ -280,14 +286,59 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 		return res, err
 	}
 
-	err = ccs.lastSignState.Save(SignStateConsensus{
+	// Create sign state with consensus lock
+	signStateConsensus := SignStateConsensus{
 		Height:                 hrst.Height,
 		Round:                  hrst.Round,
 		Step:                   hrst.Step,
 		Signature:              sig,
 		SignBytes:              req.SignBytes,
 		VoteExtensionSignature: res.VoteExtensionSignature,
-	}, &cosigner.pendingDiskWG)
+		ConsensusLock:          ccs.lastSignState.ConsensusLock, // Preserve existing lock
+	}
+
+	// Handle consensus lock updates according to Tendermint rules
+	if hrst.Step == stepPrecommit {
+		// Extract the block hash from the sign bytes
+		blockHash := extractBlockHashFromSignBytes(req.SignBytes, hrst.Step)
+		if blockHash != nil {
+			// Rule 1.2: If PRECOMMIT for V' is signed in round R' > R where V' != V,
+			// then lock on V' instead for all rounds R'' > R'
+			if hrst.Round > ccs.lastSignState.ConsensusLock.Round &&
+				ccs.lastSignState.ConsensusLock.IsLocked() &&
+				!bytes.Equal(blockHash, ccs.lastSignState.ConsensusLock.Value) {
+				// Release old lock and set new lock on V'
+				signStateConsensus.ConsensusLock = ConsensusLock{
+					Height:    hrst.Height,
+					Round:     hrst.Round,
+					Value:     blockHash,
+					ValueType: "block",
+				}
+			} else if !ccs.lastSignState.ConsensusLock.IsLocked() {
+				// First lock for this height
+				signStateConsensus.ConsensusLock = ConsensusLock{
+					Height:    hrst.Height,
+					Round:     hrst.Round,
+					Value:     blockHash,
+					ValueType: "block",
+				}
+			} else {
+				// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
+				signStateConsensus.ConsensusLock = ccs.lastSignState.ConsensusLock
+			}
+		}
+	} else {
+		// For non-PRECOMMIT steps, only clear lock if moving to different height
+		// Locks persist for all future rounds within the same height
+		if hrst.Height != ccs.lastSignState.ConsensusLock.Height {
+			signStateConsensus.ConsensusLock = ConsensusLock{}
+		} else {
+			// Preserve existing lock
+			signStateConsensus.ConsensusLock = ccs.lastSignState.ConsensusLock
+		}
+	}
+
+	err = ccs.lastSignState.Save(signStateConsensus, &cosigner.pendingDiskWG)
 
 	if err != nil {
 		if _, isSameHRSError := err.(*SameHRSError); !isSameHRSError {
