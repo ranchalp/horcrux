@@ -23,7 +23,8 @@ func TestConsensusLockBasic(t *testing.T) {
 
 	// Test updating lock on PRECOMMIT
 	blockHash := []byte("new_block_hash_123456789012345678901234567890") // 32 bytes
-	signState.ConsensusLock = updateConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, blockHash)
+	signState.ConsensusLock = updateConsensusLock(
+		signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, blockHash)
 
 	if !signState.ConsensusLock.IsLocked() {
 		t.Error("Expected consensus lock to be set after PRECOMMIT")

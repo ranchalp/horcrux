@@ -620,10 +620,12 @@ type ConsensusLockViolationError struct {
 
 func (e *ConsensusLockViolationError) Error() string { return e.msg }
 
-func newConsensusLockViolationError(lockedValue []byte, requestedValue []byte, height int64, round int64) *ConsensusLockViolationError {
+func newConsensusLockViolationError(
+	lockedValue []byte, requestedValue []byte, height int64, round int64,
+) *ConsensusLockViolationError {
 	return &ConsensusLockViolationError{
-		msg: fmt.Sprintf("consensus lock violation: locked on value %x at height %d round %d, cannot sign different value %x",
-			lockedValue, height, round, requestedValue),
+		msg: fmt.Sprintf("consensus lock violation: locked on value %x at height %d round %d, "+
+			"cannot sign different value %x", lockedValue, height, round, requestedValue),
 	}
 }
 
@@ -633,13 +635,6 @@ type ConsensusLockStepViolationError struct {
 }
 
 func (e *ConsensusLockStepViolationError) Error() string { return e.msg }
-
-func newConsensusLockStepViolationError(step int8, height int64, round int64) *ConsensusLockStepViolationError {
-	return &ConsensusLockStepViolationError{
-		msg: fmt.Sprintf("consensus lock step violation: cannot sign step %d at height %d round %d due to existing lock",
-			step, height, round),
-	}
-}
 
 // IsConsensusLockViolationError checks if the error is a consensus lock violation
 func IsConsensusLockViolationError(err error) bool {
@@ -709,7 +704,7 @@ func (signState *SignState) ClearConsensusLock(hrs HRSKey) {
 }
 
 // extractBlockHashFromSignBytes extracts the block hash from Tendermint sign bytes
-func extractBlockHashFromSignBytes(signBytes []byte, step int8) []byte {
+func extractBlockHashFromSignBytes(signBytes []byte, _ int8) []byte {
 	// This is a simplified implementation - in practice, you'd need to properly
 	// unmarshal the Tendermint vote/proposal structure to extract the block hash
 	// For now, we'll use a placeholder that returns the first 32 bytes as a hash
@@ -750,7 +745,8 @@ func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byt
 			Value:     blockHash,
 			ValueType: "block",
 		}
-	} else if !existingLock.IsLocked() {
+	}
+	if !existingLock.IsLocked() {
 		// First lock for this height
 		return ConsensusLock{
 			Height:    hrs.Height,
@@ -758,10 +754,9 @@ func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byt
 			Value:     blockHash,
 			ValueType: "block",
 		}
-	} else {
-		// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
-		return existingLock
 	}
+	// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)
+	return existingLock
 }
 
 func checkVoteOnlyDifferByTimestamp(lastSignBytes, newSignBytes []byte) error {

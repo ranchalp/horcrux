@@ -106,12 +106,12 @@ func GenerateNonces(threshold, total uint8) (Nonces, error) {
 }
 
 func (s *ThresholdSignerSoft) CombineSignatures(signatures []PartialSignature) ([]byte, error) {
-	sigIds := make([]int, len(signatures))
+	sigIDs := make([]int, len(signatures))
 	shareSigs := make([][]byte, len(signatures))
 	var ephPub []byte
 
 	for i, sig := range signatures {
-		sigIds[i] = sig.ID
+		sigIDs[i] = sig.ID
 		if i == 0 {
 			ephPub = sig.Signature[:32]
 		} else if !bytes.Equal(sig.Signature[:32], ephPub) {
@@ -119,7 +119,7 @@ func (s *ThresholdSignerSoft) CombineSignatures(signatures []PartialSignature) (
 		}
 		shareSigs[i] = sig.Signature[32:]
 	}
-	combinedSig := tsed25519.CombineShares(s.total, sigIds, shareSigs)
+	combinedSig := tsed25519.CombineShares(s.total, sigIDs, shareSigs)
 
 	return append(ephPub, combinedSig...), nil
 }
