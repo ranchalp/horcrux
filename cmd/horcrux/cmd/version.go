@@ -68,7 +68,7 @@ func versionCmd() *cobra.Command {
 		Use:          "version",
 		Short:        "Version information for horcrux",
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			bz, err := json.MarshalIndent(NewInfo(), "", "  ")
 			if err != nil {
 				return err

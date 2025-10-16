@@ -16,7 +16,7 @@ func startCmd() *cobra.Command {
 		Short:        "Start horcrux signer process",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			out := cmd.OutOrStdout()
 			logger := cometlog.NewTMLogger(cometlog.NewSyncWriter(out))
 

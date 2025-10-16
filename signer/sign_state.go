@@ -100,15 +100,14 @@ func StepToType(step int8) cometproto.SignedMsgType {
 
 // ConsensusLock represents a Tendermint consensus lock on a specific value
 type ConsensusLock struct {
-	Height    int64  `json:"height"`
-	Round     int64  `json:"round"`
-	Value     []byte `json:"value,omitempty"` // The locked block hash/value
-	ValueType string `json:"value_type"`      // "block" or "nil"
+	Height int64  `json:"height"`
+	Round  int64  `json:"round"`
+	Value  []byte `json:"value,omitempty"` // nil for nil locked, non-nil for block locked
 }
 
 // IsLocked returns true if there is an active consensus lock
 func (lock *ConsensusLock) IsLocked() bool {
-	return lock.Height > 0 && lock.Round >= 0
+	return lock.Height >= 0 && lock.Round >= 0 && lock.Value != nil
 }
 
 // SignState stores signing information for high level watermark management.
@@ -122,7 +121,7 @@ type SignState struct {
 	VoteExtensionSignature []byte              `json:"vote_ext_signature,omitempty"`
 
 	// Consensus lock tracking to prevent amnesia faults
-	ConsensusLock ConsensusLock `json:"consensus_lock,omitempty"`
+	ConsensusLock ConsensusLock `json:"consensus_lock"`
 
 	filePath string
 
@@ -314,10 +313,9 @@ func (signState *SignState) lockedCopy() *SignState {
 		SignBytes:              signBz,
 		VoteExtensionSignature: voteExtSig,
 		ConsensusLock: ConsensusLock{
-			Height:    signState.ConsensusLock.Height,
-			Round:     signState.ConsensusLock.Round,
-			Value:     lockValue,
-			ValueType: signState.ConsensusLock.ValueType,
+			Height: signState.ConsensusLock.Height,
+			Round:  signState.ConsensusLock.Round,
+			Value:  lockValue,
 		},
 		filePath: signState.filePath,
 	}
@@ -615,17 +613,25 @@ func newDiffBlockIDsError(first, second []byte) *DiffBlockIDsError {
 
 // ConsensusLockViolationError represents an error when trying to sign a block that violates a consensus lock
 type ConsensusLockViolationError struct {
-	msg string
+	LockedValue    []byte
+	RequestedValue []byte
+	Height         int64
+	Round          int64
 }
 
-func (e *ConsensusLockViolationError) Error() string { return e.msg }
+func (e *ConsensusLockViolationError) Error() string {
+	return fmt.Sprintf("consensus lock violation: locked on value %x at height %d round %d, "+
+		"cannot sign different value %x", e.LockedValue, e.Height, e.Round, e.RequestedValue)
+}
 
 func newConsensusLockViolationError(
 	lockedValue []byte, requestedValue []byte, height int64, round int64,
 ) *ConsensusLockViolationError {
 	return &ConsensusLockViolationError{
-		msg: fmt.Sprintf("consensus lock violation: locked on value %x at height %d round %d, "+
-			"cannot sign different value %x", lockedValue, height, round, requestedValue),
+		LockedValue:    lockedValue,
+		RequestedValue: requestedValue,
+		Height:         height,
+		Round:          round,
 	}
 }
 
@@ -638,14 +644,14 @@ func (e *ConsensusLockStepViolationError) Error() string { return e.msg }
 
 // IsConsensusLockViolationError checks if the error is a consensus lock violation
 func IsConsensusLockViolationError(err error) bool {
-	_, ok := err.(*ConsensusLockViolationError)
-	return ok
+	var violationErr *ConsensusLockViolationError
+	return errors.As(err, &violationErr)
 }
 
 // IsConsensusLockStepViolationError checks if the error is a consensus lock step violation
 func IsConsensusLockStepViolationError(err error) bool {
-	_, ok := err.(*ConsensusLockStepViolationError)
-	return ok
+	var stepViolationErr *ConsensusLockStepViolationError
+	return errors.As(err, &stepViolationErr)
 }
 
 // ValidateConsensusLock checks if the requested signing operation violates any existing consensus lock
@@ -704,14 +710,39 @@ func (signState *SignState) ClearConsensusLock(hrs HRSKey) {
 }
 
 // extractBlockHashFromSignBytes extracts the block hash from Tendermint sign bytes
-func extractBlockHashFromSignBytes(signBytes []byte, _ int8) []byte {
-	// This is a simplified implementation - in practice, you'd need to properly
-	// unmarshal the Tendermint vote/proposal structure to extract the block hash
-	// For now, we'll use a placeholder that returns the first 32 bytes as a hash
-	if len(signBytes) < 32 {
+func extractBlockHashFromSignBytes(signBytes []byte, step int8) []byte {
+	if len(signBytes) == 0 {
 		return nil
 	}
-	return signBytes[:32] // Placeholder - should be replaced with proper Tendermint parsing
+
+	switch step {
+	case stepPropose:
+		// For PROPOSAL, extract block hash from CanonicalProposal
+		var proposal cometproto.CanonicalProposal
+		if err := protoio.UnmarshalDelimited(signBytes, &proposal); err != nil {
+			return nil
+		}
+		blockID := proposal.GetBlockID()
+		if blockID == nil {
+			return nil
+		}
+		return blockID.GetHash()
+
+	case stepPrevote, stepPrecommit:
+		// For PREVOTE/PRECOMMIT, extract block hash from CanonicalVote
+		var vote cometproto.CanonicalVote
+		if err := protoio.UnmarshalDelimited(signBytes, &vote); err != nil {
+			return nil
+		}
+		blockID := vote.GetBlockID()
+		if blockID == nil {
+			return nil
+		}
+		return blockID.GetHash()
+
+	default:
+		return nil
+	}
 }
 
 // updateConsensusLock updates the consensus lock based on Tendermint rules
@@ -740,19 +771,17 @@ func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byt
 		!bytes.Equal(blockHash, existingLock.Value) {
 		// Release old lock and set new lock on V'
 		return ConsensusLock{
-			Height:    hrs.Height,
-			Round:     hrs.Round,
-			Value:     blockHash,
-			ValueType: "block",
+			Height: hrs.Height,
+			Round:  hrs.Round,
+			Value:  blockHash,
 		}
 	}
 	if !existingLock.IsLocked() {
 		// First lock for this height
 		return ConsensusLock{
-			Height:    hrs.Height,
-			Round:     hrs.Round,
-			Value:     blockHash,
-			ValueType: "block",
+			Height: hrs.Height,
+			Round:  hrs.Round,
+			Value:  blockHash,
 		}
 	}
 	// If PRECOMMIT for same value V in higher round, keep existing lock (no change needed)

@@ -66,7 +66,7 @@ func createCosignerEd25519ShardsCmd() *cobra.Command {
 		Use:   "create-ed25519-shards",
 		Args:  cobra.NoArgs,
 		Short: "Create cosigner Ed25519 shards",
-		RunE: func(cmd *cobra.Command, args []string) (err error) {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			flags := cmd.Flags()
 
 			chainID, _ := flags.GetString(flagChainID)
@@ -163,7 +163,7 @@ func createCosignerECIESShardsCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		Short: "Create cosigner ECIES shards",
 
-		RunE: func(cmd *cobra.Command, args []string) (err error) {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			shards, _ := cmd.Flags().GetUint8(flagShards)
 
 			if shards <= 0 {
@@ -211,7 +211,7 @@ func createCosignerRSAShardsCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		Short: "Create cosigner RSA shards",
 
-		RunE: func(cmd *cobra.Command, args []string) (err error) {
+		RunE: func(cmd *cobra.Command, _ []string) (err error) {
 			shards, _ := cmd.Flags().GetUint8(flagShards)
 
 			if shards <= 0 {

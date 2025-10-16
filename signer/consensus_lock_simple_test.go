@@ -3,7 +3,45 @@ package signer
 import (
 	"strings"
 	"testing"
+
+	"github.com/cometbft/cometbft/libs/protoio"
+	cometproto "github.com/cometbft/cometbft/proto/tendermint/types"
 )
+
+// createTestSignBytes creates proper Tendermint sign bytes for testing
+func createTestSignBytes(blockHash []byte, step int8) []byte {
+
+	switch step {
+	case stepPropose:
+		// Create a CanonicalProposal
+		proposal := &cometproto.CanonicalProposal{
+			Type:   cometproto.ProposalType,
+			Height: 100,
+			Round:  5,
+			BlockID: &cometproto.CanonicalBlockID{
+				Hash: blockHash,
+			},
+		}
+		signBytes, _ := protoio.MarshalDelimited(proposal)
+		return signBytes
+
+	case stepPrevote, stepPrecommit:
+		// Create a CanonicalVote
+		vote := &cometproto.CanonicalVote{
+			Type:   cometproto.SignedMsgType(step),
+			Height: 100,
+			Round:  5,
+			BlockID: &cometproto.CanonicalBlockID{
+				Hash: blockHash,
+			},
+		}
+		signBytes, _ := protoio.MarshalDelimited(vote)
+		return signBytes
+
+	default:
+		return nil
+	}
+}
 
 func TestConsensusLockBasic(t *testing.T) {
 	// Create a new sign state with no lock
@@ -22,9 +60,10 @@ func TestConsensusLockBasic(t *testing.T) {
 	}
 
 	// Test updating lock on PRECOMMIT
-	blockHash := []byte("new_block_hash_123456789012345678901234567890") // 32 bytes
+	blockHash := []byte("new_block_hash_123456789012345678901234567890")[:32] // 32 bytes
+	signBytes := createTestSignBytes(blockHash, stepPrecommit)
 	signState.ConsensusLock = updateConsensusLock(
-		signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, blockHash)
+		signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, signBytes)
 
 	if !signState.ConsensusLock.IsLocked() {
 		t.Error("Expected consensus lock to be set after PRECOMMIT")
@@ -53,22 +92,22 @@ func TestConsensusLockValidationWithLock(t *testing.T) {
 		Round:  5,
 		Step:   stepPrecommit,
 		ConsensusLock: ConsensusLock{
-			Height:    100,
-			Round:     5,
-			Value:     lockedValue[:32], // First 32 bytes
-			ValueType: "block",
+			Height: 100,
+			Round:  5,
+			Value:  lockedValue[:32], // First 32 bytes
 		},
 	}
 
 	// Test 1: Try to sign the same block at same round (should succeed)
-	sameBlockBytes := []byte("locked_block_hash_123456789012345678901234567890_other_data")
+	sameBlockBytes := createTestSignBytes(lockedValue[:32], stepPrevote)
 	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, sameBlockBytes)
 	if err != nil {
 		t.Errorf("Expected no error when signing same block at same round, got: %v", err)
 	}
 
 	// Test 2: Try to sign a different block at the same round (should fail for PROPOSAL/PREVOTE)
-	differentBlockBytes := []byte("different_block_hash_123456789012345678901234567890_other_data")
+	differentBlockHash := []byte("different_block_hash_123456789012345678901234567890")[:32]
+	differentBlockBytes := createTestSignBytes(differentBlockHash, stepPrevote)
 	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, differentBlockBytes)
 	if err == nil {
 		t.Error("Expected error when signing different block at same round, got nil")
@@ -87,13 +126,15 @@ func TestConsensusLockValidationWithLock(t *testing.T) {
 	}
 
 	// Test 5: Try to sign PRECOMMIT at later round (should succeed - releases lock)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, differentBlockBytes)
+	precommitBytes := createTestSignBytes(differentBlockHash, stepPrecommit)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, precommitBytes)
 	if err != nil {
 		t.Errorf("Expected no error when signing PRECOMMIT at later round, got: %v", err)
 	}
 
 	// Test 6: Try to sign at a different height (should succeed - lock is released)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentBlockBytes)
+	differentHeightBytes := createTestSignBytes(differentBlockHash, stepPrevote)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes)
 	if err != nil {
 		t.Errorf("Expected no error when signing at different height, got: %v", err)
 	}
@@ -107,15 +148,15 @@ func TestConsensusLockErrorTypes(t *testing.T) {
 		Round:  5,
 		Step:   stepPrecommit,
 		ConsensusLock: ConsensusLock{
-			Height:    100,
-			Round:     5,
-			Value:     lockedValue[:32], // First 32 bytes
-			ValueType: "block",
+			Height: 100,
+			Round:  5,
+			Value:  lockedValue[:32], // First 32 bytes
 		},
 	}
 
 	// Test that we get a ConsensusLockViolationError for conflicting values
-	differentBlockBytes := []byte("different_block_hash_123456789012345678901234567890")
+	differentBlockHash := []byte("different_block_hash_123456789012345678901234567890")[:32]
+	differentBlockBytes := createTestSignBytes(differentBlockHash, stepPrevote)
 	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes)
 	if err == nil {
 		t.Error("Expected consensus lock violation error, got nil")
@@ -154,10 +195,9 @@ func TestConsensusLockClearing(t *testing.T) {
 		Round:  5,
 		Step:   stepPrecommit,
 		ConsensusLock: ConsensusLock{
-			Height:    100,
-			Round:     5,
-			Value:     lockedValue[:32], // First 32 bytes
-			ValueType: "block",
+			Height: 100,
+			Round:  5,
+			Value:  lockedValue[:32], // First 32 bytes
 		},
 	}
 
@@ -169,10 +209,9 @@ func TestConsensusLockClearing(t *testing.T) {
 
 	// Reset the lock
 	signState.ConsensusLock = ConsensusLock{
-		Height:    100,
-		Round:     5,
-		Value:     lockedValue[:32],
-		ValueType: "block",
+		Height: 100,
+		Round:  5,
+		Value:  lockedValue[:32],
 	}
 
 	// Test 2: Don't clear lock when moving to higher round (locks persist for all future rounds)
@@ -183,10 +222,9 @@ func TestConsensusLockClearing(t *testing.T) {
 
 	// Reset the lock
 	signState.ConsensusLock = ConsensusLock{
-		Height:    100,
-		Round:     5,
-		Value:     lockedValue[:32],
-		ValueType: "block",
+		Height: 100,
+		Round:  5,
+		Value:  lockedValue[:32],
 	}
 
 	// Test 3: Don't clear lock when moving to same or lower round
