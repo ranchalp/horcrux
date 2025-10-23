@@ -153,7 +153,8 @@ type SignState struct {
 	ConsensusLock ConsensusLock `json:"consensus_lock,omitempty"`
 
 	// Prevote quorums tracking for Tendermint Algorithm Line 28
-	PrevoteQuorums map[string][]PrevoteQuorum `json:"prevote_quorums"` // height -> prevote quorums
+	// Map: height -> (value -> oldest round that received 2f+1 prevotes)
+	PrevoteQuorums map[string]map[string]int64 `json:"prevote_quorums"` // height -> (value -> round)
 
 	filePath string
 
@@ -291,13 +292,7 @@ func (signState *SignState) blockDoubleSign(ssc SignStateConsensus) (*SignState,
 	signState.VoteExtensionSignature = ssc.VoteExtensionSignature
 
 	// Handle consensus lock updates according to Tendermint rules
-	oldHeight := signState.ConsensusLock.Height
 	signState.ConsensusLock = nextConsensusLock(signState.ConsensusLock, ssc.HRSKey(), ssc.SignBytes)
-
-	// Clean up prevote quorums from old heights when moving to new height
-	if ssc.Height > oldHeight && signState.PrevoteQuorums != nil {
-		signState.cleanupOldPrevoteQuorums(ssc.Height)
-	}
 
 	return signState.lockedCopy(), nil
 }
@@ -800,34 +795,32 @@ func (signState *SignState) AddPrevoteQuorum(height int64, value []byte, round i
 	defer signState.mu.Unlock()
 
 	if signState.PrevoteQuorums == nil {
-		signState.PrevoteQuorums = make(map[string][]PrevoteQuorum)
+		signState.PrevoteQuorums = make(map[string]map[string]int64)
 	}
 
 	heightKey := fmt.Sprintf("%d", height)
-	quorums := signState.PrevoteQuorums[heightKey]
+	valueKey := hex.EncodeToString(value)
 
-	// Add or update the prevote quorum
-	quorum := PrevoteQuorum{Value: value, Round: round}
-
-	// Check if we already have this value, keep the oldest round (> 0) for optimal bypass
-	for i, existing := range quorums {
-		if bytes.Equal(existing.Value, value) {
-			// Keep the oldest round that is greater than 0 for optimal bypass
-			if existing.Round > 0 && (round == 0 || round > existing.Round) {
-				// Keep existing (older) round
-				return
-			} else if round > 0 && (existing.Round == 0 || existing.Round > round) {
-				// Update to older round
-				quorums[i] = quorum
-				signState.PrevoteQuorums[heightKey] = quorums
-			}
-			return
-		}
+	// Initialize height map if it doesn't exist
+	if signState.PrevoteQuorums[heightKey] == nil {
+		signState.PrevoteQuorums[heightKey] = make(map[string]int64)
 	}
 
-	// Add new quorum
-	quorums = append(quorums, quorum)
-	signState.PrevoteQuorums[heightKey] = quorums
+	// Keep the oldest round (> 0) for optimal bypass
+	existingRound, exists := signState.PrevoteQuorums[heightKey][valueKey]
+	if !exists {
+		// New value, store the round
+		signState.PrevoteQuorums[heightKey][valueKey] = round
+	} else {
+		// Keep the oldest round that is greater than 0 for optimal bypass
+		if existingRound > 0 && (round == 0 || round > existingRound) {
+			// Keep existing (older) round
+			return
+		} else if round > 0 && (existingRound == 0 || existingRound > round) {
+			// Update to older round
+			signState.PrevoteQuorums[heightKey][valueKey] = round
+		}
+	}
 }
 
 // CanUnlockForValue checks if we can unlock for a specific value based on Tendermint consensus rules
@@ -836,19 +829,16 @@ func (signState *SignState) CanUnlockForValue(height int64, value []byte, curren
 	defer signState.mu.RUnlock()
 
 	heightKey := fmt.Sprintf("%d", height)
-	quorums, exists := signState.PrevoteQuorums[heightKey]
+	valueKey := hex.EncodeToString(value)
+
+	heightMap, exists := signState.PrevoteQuorums[heightKey]
 	if !exists {
 		return false
 	}
 
 	// Check if we have a prevote quorum for this value from a previous round
-	for _, quorum := range quorums {
-		if bytes.Equal(quorum.Value, value) && quorum.Round < currentRound {
-			return true
-		}
-	}
-
-	return false
+	quorumRound, exists := heightMap[valueKey]
+	return exists && quorumRound < currentRound
 }
 
 // cleanupOldPrevoteQuorums removes prevote quorums from heights older than the current height
