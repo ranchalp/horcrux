@@ -648,6 +648,22 @@ func IsConsensusLockViolationError(err error) bool {
 	return errors.As(err, &violationErr)
 }
 
+type BlockHashExtractionError struct {
+	step int8
+	err  error
+}
+
+func (e *BlockHashExtractionError) Error() string {
+	return fmt.Sprintf("failed to extract block hash from sign bytes for step %d: %v", e.step, e.err)
+}
+
+func newBlockHashExtractionError(step int8, err error) *BlockHashExtractionError {
+	return &BlockHashExtractionError{
+		step: step,
+		err:  err,
+	}
+}
+
 // IsConsensusLockStepViolationError checks if the error is a consensus lock step violation
 func IsConsensusLockStepViolationError(err error) bool {
 	var stepViolationErr *ConsensusLockStepViolationError
@@ -675,7 +691,7 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 		// Extract the block hash from the sign bytes to compare with the locked value
 		blockHash, err := extractBlockHashFromSignBytes(signBytes, hrs.Step)
 		if err != nil {
-			return fmt.Errorf("failed to extract block hash from sign bytes: %w", err)
+			return newBlockHashExtractionError(hrs.Step, err)
 		}
 
 		// Check if we're trying to sign a different value than what we're locked on
