@@ -101,8 +101,8 @@ func StepToType(step int8) cometproto.SignedMsgType {
 // ConsensusLock represents a Tendermint consensus lock on a specific value
 type ConsensusLock struct {
 	Height int64  `json:"height"`
-	Round  int64  `json:"round"`
-	Value  []byte `json:"value,omitempty"` // nil for nil locked, non-nil for block locked
+	Round  int64  `json:"round"`           // The round where we locked on this value (lockedRound)
+	Value  []byte `json:"value,omitempty"` // The value we're locked on (lockedValue)
 }
 
 // IsLocked returns true if there is an active consensus lock
@@ -255,7 +255,7 @@ func (signState *SignState) blockDoubleSign(ssc SignStateConsensus) (*SignState,
 	signState.VoteExtensionSignature = ssc.VoteExtensionSignature
 
 	// Handle consensus lock updates according to Tendermint rules
-	signState.ConsensusLock = updateConsensusLock(signState.ConsensusLock, ssc.HRSKey(), ssc.SignBytes)
+	signState.ConsensusLock = nextConsensusLock(signState.ConsensusLock, ssc.HRSKey(), ssc.SignBytes)
 
 	return signState.lockedCopy(), nil
 }
@@ -669,13 +669,13 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 		return nil
 	}
 
-	// For PROPOSAL and PREVOTE messages in rounds R' >= R, only allow signing for the locked value V
+	// For PROPOSAL and PREVOTE messages in rounds R' >= locked_round, only allow signing for the locked value V
+	// We use the stored round from the consensus lock for validation
 	if (hrs.Step == stepPropose || hrs.Step == stepPrevote) && hrs.Round >= signState.ConsensusLock.Round {
 		// Extract the block hash from the sign bytes to compare with the locked value
-		blockHash := extractBlockHashFromSignBytes(signBytes, hrs.Step)
-		if blockHash == nil {
-			// If we can't extract the block hash, allow signing (fallback to existing behavior)
-			return nil
+		blockHash, err := extractBlockHashFromSignBytes(signBytes, hrs.Step)
+		if err != nil {
+			return fmt.Errorf("failed to extract block hash from sign bytes: %w", err)
 		}
 
 		// Check if we're trying to sign a different value than what we're locked on
@@ -710,9 +710,9 @@ func (signState *SignState) ClearConsensusLock(hrs HRSKey) {
 }
 
 // extractBlockHashFromSignBytes extracts the block hash from Tendermint sign bytes
-func extractBlockHashFromSignBytes(signBytes []byte, step int8) []byte {
+func extractBlockHashFromSignBytes(signBytes []byte, step int8) ([]byte, error) {
 	if len(signBytes) == 0 {
-		return nil
+		return nil, fmt.Errorf("empty sign bytes")
 	}
 
 	switch step {
@@ -720,34 +720,34 @@ func extractBlockHashFromSignBytes(signBytes []byte, step int8) []byte {
 		// For PROPOSAL, extract block hash from CanonicalProposal
 		var proposal cometproto.CanonicalProposal
 		if err := protoio.UnmarshalDelimited(signBytes, &proposal); err != nil {
-			return nil
+			return nil, fmt.Errorf("failed to unmarshal proposal: %w", err)
 		}
 		blockID := proposal.GetBlockID()
 		if blockID == nil {
-			return nil
+			return nil, fmt.Errorf("proposal has no block ID")
 		}
-		return blockID.GetHash()
+		return blockID.GetHash(), nil
 
 	case stepPrevote, stepPrecommit:
 		// For PREVOTE/PRECOMMIT, extract block hash from CanonicalVote
 		var vote cometproto.CanonicalVote
 		if err := protoio.UnmarshalDelimited(signBytes, &vote); err != nil {
-			return nil
+			return nil, fmt.Errorf("failed to unmarshal vote: %w", err)
 		}
 		blockID := vote.GetBlockID()
 		if blockID == nil {
-			return nil
+			return nil, fmt.Errorf("vote has no block ID")
 		}
-		return blockID.GetHash()
+		return blockID.GetHash(), nil
 
 	default:
-		return nil
+		return nil, fmt.Errorf("unknown step: %d", step)
 	}
 }
 
-// updateConsensusLock updates the consensus lock based on Tendermint rules
+// nextConsensusLock updates the consensus lock based on Tendermint rules
 // This is a helper function that can be used by both SignState and other components
-func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byte) ConsensusLock {
+func nextConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byte) ConsensusLock {
 	// Only update lock for PRECOMMIT steps (step 3)
 	if hrs.Step != stepPrecommit {
 		// For non-PRECOMMIT steps, only clear lock if moving to different height
@@ -759,8 +759,9 @@ func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byt
 	}
 
 	// Extract the block hash from the sign bytes
-	blockHash := extractBlockHashFromSignBytes(signBytes, hrs.Step)
-	if blockHash == nil {
+	blockHash, err := extractBlockHashFromSignBytes(signBytes, hrs.Step)
+	if err != nil {
+		// If we can't extract the block hash, return existing lock unchanged
 		return existingLock
 	}
 
@@ -770,17 +771,19 @@ func updateConsensusLock(existingLock ConsensusLock, hrs HRSKey, signBytes []byt
 		existingLock.IsLocked() &&
 		!bytes.Equal(blockHash, existingLock.Value) {
 		// Release old lock and set new lock on V'
+		// Round is where we locked on this value (lockedRound)
 		return ConsensusLock{
 			Height: hrs.Height,
-			Round:  hrs.Round,
+			Round:  hrs.Round, // Round where we locked on this value
 			Value:  blockHash,
 		}
 	}
 	if !existingLock.IsLocked() {
 		// First lock for this height
+		// Round is where we locked on this value (lockedRound)
 		return ConsensusLock{
 			Height: hrs.Height,
-			Round:  hrs.Round,
+			Round:  hrs.Round, // Round where we locked on this value
 			Value:  blockHash,
 		}
 	}

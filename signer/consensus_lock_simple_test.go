@@ -62,7 +62,7 @@ func TestConsensusLockBasic(t *testing.T) {
 	// Test updating lock on PRECOMMIT
 	blockHash := []byte("new_block_hash_123456789012345678901234567890")[:32] // 32 bytes
 	signBytes := createTestSignBytes(blockHash, stepPrecommit)
-	signState.ConsensusLock = updateConsensusLock(
+	signState.ConsensusLock = nextConsensusLock(
 		signState.ConsensusLock, HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, signBytes)
 
 	if !signState.ConsensusLock.IsLocked() {
@@ -174,14 +174,15 @@ func TestConsensusLockErrorTypes(t *testing.T) {
 	}
 
 	// Test that we don't get an error for the same value
-	sameBlockBytes := []byte("locked_block_hash_123456789012345678901234567890")
+	sameBlockBytes := createTestSignBytes(lockedValue[:32], stepPrevote)
 	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes)
 	if err != nil {
 		t.Errorf("Expected no error for same value, got: %v", err)
 	}
 
 	// Test that we don't get an error for different height
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentBlockBytes)
+	differentHeightBytes := createTestSignBytes(differentBlockHash, stepPrevote)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes)
 	if err != nil {
 		t.Errorf("Expected no error for different height, got: %v", err)
 	}

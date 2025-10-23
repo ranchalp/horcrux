@@ -975,7 +975,7 @@ func (pv *ThresholdValidator) Sign(
 	}
 
 	// Handle consensus lock updates according to Tendermint rules
-	newLss.SignStateConsensus.ConsensusLock = updateConsensusLock(
+	newLss.SignStateConsensus.ConsensusLock = nextConsensusLock(
 		css.lastSignState.ConsensusLock, block.HRSKey(), signBytes)
 
 	// Err will be present if newLss is not above high watermark

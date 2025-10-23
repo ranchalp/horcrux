@@ -306,7 +306,7 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 	}
 
 	// Handle consensus lock updates according to Tendermint rules
-	signStateConsensus.ConsensusLock = updateConsensusLock(ccs.lastSignState.ConsensusLock, hrst.HRSKey(), req.SignBytes)
+	signStateConsensus.ConsensusLock = nextConsensusLock(ccs.lastSignState.ConsensusLock, hrst.HRSKey(), req.SignBytes)
 
 	err = ccs.lastSignState.Save(signStateConsensus, &cosigner.pendingDiskWG)
 

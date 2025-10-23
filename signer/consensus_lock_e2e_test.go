@@ -95,7 +95,7 @@ func TestConsensusLockE2E(t *testing.T) {
 
 	// Test 6: After signing a PRECOMMIT for a different block, the lock should be updated
 	// Simulate the lock update
-	newLock := updateConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, differentBlockPrecommit)
+	newLock := nextConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, differentBlockPrecommit)
 	require.True(t, newLock.IsLocked(), "New lock should be active")
 	require.Equal(t, int64(100), newLock.Height, "Lock should be at height 100")
 	require.Equal(t, int64(6), newLock.Round, "Lock should be at round 6")
@@ -153,7 +153,7 @@ func TestConsensusLockRealWorldScenario(t *testing.T) {
 	require.NoError(t, err, "Should allow PRECOMMIT for block B (releases lock)")
 
 	// After signing PRECOMMIT for block B, validator should be locked on block B
-	newLock := updateConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, blockBPrecommit)
+	newLock := nextConsensusLock(signState.ConsensusLock, HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, blockBPrecommit)
 	require.True(t, newLock.IsLocked(), "Should be locked on block B")
 	require.Equal(t, blockB, newLock.Value, "Lock should be on block B")
 	require.Equal(t, int64(6), newLock.Round, "Lock should be at round 6")
