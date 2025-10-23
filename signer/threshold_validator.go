@@ -672,9 +672,12 @@ func (pv *ThresholdValidator) Sign(
 		Timestamp: stamp.UnixNano(),
 	}
 
-	// Check for consensus lock violations before proceeding
+	// Get chain state for consensus lock validation
 	css := pv.mustLoadChainState(chainID)
-	if err := css.lastSignState.ValidateConsensusLock(block.HRSKey(), signBytes); err != nil {
+
+	// Check for consensus lock violations before proceeding
+	// Use sophisticated consensus state validation
+	if err := css.lastSignState.ValidateConsensusLockWithConsensusState(block.HRSKey(), signBytes); err != nil {
 		// Log the specific consensus lock violation with detailed context
 		log.Error("Consensus lock violation detected in threshold validator",
 			"chain_id", chainID,

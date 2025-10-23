@@ -56,6 +56,13 @@ type CosignerSignRequest struct {
 	VoteExtUUID            uuid.UUID
 }
 
+// PrevoteQuorumUpdate contains information about a new 2f+1 prevote quorum
+type PrevoteQuorumUpdate struct {
+	Height int64  `json:"height"`
+	Value  []byte `json:"value"`
+	Round  int64  `json:"round"`
+}
+
 type CosignerSignResponse struct {
 	Timestamp                time.Time
 	NoncePublic              []byte

@@ -105,6 +105,35 @@ type ConsensusLock struct {
 	Value  []byte `json:"value,omitempty"` // The value we're locked on (lockedValue)
 }
 
+// MarshalJSON implements custom JSON marshaling for ConsensusLock
+func (cl ConsensusLock) MarshalJSON() ([]byte, error) {
+	if !cl.IsLocked() {
+		return []byte("null"), nil
+	}
+
+	// Use type alias to avoid infinite recursion
+	type Alias ConsensusLock
+	return cometjson.Marshal(Alias(cl))
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for ConsensusLock
+func (cl *ConsensusLock) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*cl = ConsensusLock{}
+		return nil
+	}
+
+	// Use type alias to avoid infinite recursion
+	type Alias ConsensusLock
+	return cometjson.Unmarshal(data, (*Alias)(cl))
+}
+
+// PrevoteQuorum represents a value that received 2f+1 prevotes in a specific round
+type PrevoteQuorum struct {
+	Value []byte `json:"value"` // The block hash that received 2f+1 prevotes
+	Round int64  `json:"round"` // The round where 2f+1 prevotes were received
+}
+
 // IsLocked returns true if there is an active consensus lock
 func (lock *ConsensusLock) IsLocked() bool {
 	return lock.Height >= 0 && lock.Round >= 0 && lock.Value != nil
@@ -121,7 +150,10 @@ type SignState struct {
 	VoteExtensionSignature []byte              `json:"vote_ext_signature,omitempty"`
 
 	// Consensus lock tracking to prevent amnesia faults
-	ConsensusLock ConsensusLock `json:"consensus_lock"`
+	ConsensusLock ConsensusLock `json:"consensus_lock,omitempty"`
+
+	// Prevote quorums tracking for Tendermint Algorithm Line 28
+	PrevoteQuorums map[string][]PrevoteQuorum `json:"prevote_quorums"` // height -> prevote quorums
 
 	filePath string
 
@@ -203,15 +235,19 @@ func NewSignStateConsensus(height int64, round int64, step int8) SignStateConsen
 }
 
 type ConflictingDataError struct {
-	msg string
+	ExistingSignBytes []byte
+	NewSignBytes      []byte
 }
 
-func (e *ConflictingDataError) Error() string { return e.msg }
+func (e *ConflictingDataError) Error() string {
+	return fmt.Sprintf("conflicting data. existing: %s - new: %s",
+		hex.EncodeToString(e.ExistingSignBytes), hex.EncodeToString(e.NewSignBytes))
+}
 
 func newConflictingDataError(existingSignBytes, newSignBytes []byte) *ConflictingDataError {
 	return &ConflictingDataError{
-		msg: fmt.Sprintf("conflicting data. existing: %s - new: %s",
-			hex.EncodeToString(existingSignBytes), hex.EncodeToString(newSignBytes)),
+		ExistingSignBytes: existingSignBytes,
+		NewSignBytes:      newSignBytes,
 	}
 }
 
@@ -255,7 +291,13 @@ func (signState *SignState) blockDoubleSign(ssc SignStateConsensus) (*SignState,
 	signState.VoteExtensionSignature = ssc.VoteExtensionSignature
 
 	// Handle consensus lock updates according to Tendermint rules
+	oldHeight := signState.ConsensusLock.Height
 	signState.ConsensusLock = nextConsensusLock(signState.ConsensusLock, ssc.HRSKey(), ssc.SignBytes)
+
+	// Clean up prevote quorums from old heights when moving to new height
+	if ssc.Height > oldHeight && signState.PrevoteQuorums != nil {
+		signState.cleanupOldPrevoteQuorums(ssc.Height)
+	}
 
 	return signState.lockedCopy(), nil
 }
@@ -436,14 +478,20 @@ func (signState *SignState) CheckHRS(hrst HRSTKey) (bool, error) {
 }
 
 type SameHRSError struct {
-	msg string
+	Height int64
+	Round  int64
+	Step   int8
 }
 
-func (e *SameHRSError) Error() string { return e.msg }
+func (e *SameHRSError) Error() string {
+	return fmt.Sprintf("HRS is the same as current: %d:%d:%d", e.Height, e.Round, e.Step)
+}
 
 func newSameHRSError(hrs HRSKey) *SameHRSError {
 	return &SameHRSError{
-		msg: fmt.Sprintf("HRS is the same as current: %d:%d:%d", hrs.Height, hrs.Round, hrs.Step),
+		Height: hrs.Height,
+		Round:  hrs.Round,
+		Step:   hrs.Step,
 	}
 }
 
@@ -637,10 +685,14 @@ func newConsensusLockViolationError(
 
 // ConsensusLockStepViolationError represents an error when trying to sign a step that violates consensus lock rules
 type ConsensusLockStepViolationError struct {
-	msg string
+	Height int64
+	Round  int64
+	Step   int8
 }
 
-func (e *ConsensusLockStepViolationError) Error() string { return e.msg }
+func (e *ConsensusLockStepViolationError) Error() string {
+	return fmt.Sprintf("consensus lock step violation at %d:%d:%d", e.Height, e.Round, e.Step)
+}
 
 // IsConsensusLockViolationError checks if the error is a consensus lock violation
 func IsConsensusLockViolationError(err error) bool {
@@ -672,6 +724,12 @@ func IsConsensusLockStepViolationError(err error) bool {
 
 // ValidateConsensusLock checks if the requested signing operation violates any existing consensus lock
 func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) error {
+	return signState.ValidateConsensusLockWithConsensusState(hrs, signBytes)
+}
+
+// ValidateConsensusLockWithConsensusState checks if the requested signing operation violates any existing consensus lock
+// Uses sophisticated consensus state validation based on Tendermint consensus rules
+func (signState *SignState) ValidateConsensusLockWithConsensusState(hrs HRSKey, signBytes []byte) error {
 	signState.mu.RLock()
 	defer signState.mu.RUnlock()
 
@@ -696,6 +754,176 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 
 		// Check if we're trying to sign a different value than what we're locked on
 		if !bytes.Equal(blockHash, signState.ConsensusLock.Value) {
+			// For PREVOTE, check if we can unlock based on prevote quorums
+			if hrs.Step == stepPrevote {
+				// Check if we have prevote quorum information for this height
+				heightKey := fmt.Sprintf("%d", hrs.Height)
+				_, exists := signState.PrevoteQuorums[heightKey]
+
+				if exists && signState.CanUnlockForValue(hrs.Height, blockHash, hrs.Round) {
+					// We have consensus justification - allow signing different value
+					return nil
+				}
+
+				// Backwards compatibility: if no prevote quorum information is available,
+				// be conservative and block signing (safer approach)
+				// This ensures old Tendermint versions don't accidentally allow invalid signing
+				if !exists {
+					// No prevote quorum information available - block signing for safety
+					return newConsensusLockViolationError(
+						signState.ConsensusLock.Value,
+						blockHash,
+						signState.ConsensusLock.Height,
+						signState.ConsensusLock.Round,
+					)
+				}
+			}
+
+			// No consensus justification or not PREVOTE - block the signing
+			return newConsensusLockViolationError(
+				signState.ConsensusLock.Value,
+				blockHash,
+				signState.ConsensusLock.Height,
+				signState.ConsensusLock.Round,
+			)
+		}
+	}
+
+	// For PRECOMMIT messages in rounds R' > R, allow signing for any value (this releases the lock)
+	// For same or earlier rounds, allow signing (no additional restrictions)
+	return nil
+}
+
+// AddPrevoteQuorum records that a value received 2f+1 prevotes in a specific round
+func (signState *SignState) AddPrevoteQuorum(height int64, value []byte, round int64) {
+	signState.mu.Lock()
+	defer signState.mu.Unlock()
+
+	if signState.PrevoteQuorums == nil {
+		signState.PrevoteQuorums = make(map[string][]PrevoteQuorum)
+	}
+
+	heightKey := fmt.Sprintf("%d", height)
+	quorums := signState.PrevoteQuorums[heightKey]
+
+	// Add or update the prevote quorum
+	quorum := PrevoteQuorum{Value: value, Round: round}
+
+	// Check if we already have this value, keep the oldest round (> 0) for optimal bypass
+	for i, existing := range quorums {
+		if bytes.Equal(existing.Value, value) {
+			// Keep the oldest round that is greater than 0 for optimal bypass
+			if existing.Round > 0 && (round == 0 || round > existing.Round) {
+				// Keep existing (older) round
+				return
+			} else if round > 0 && (existing.Round == 0 || existing.Round > round) {
+				// Update to older round
+				quorums[i] = quorum
+				signState.PrevoteQuorums[heightKey] = quorums
+			}
+			return
+		}
+	}
+
+	// Add new quorum
+	quorums = append(quorums, quorum)
+	signState.PrevoteQuorums[heightKey] = quorums
+}
+
+// CanUnlockForValue checks if we can unlock for a specific value based on Tendermint consensus rules
+func (signState *SignState) CanUnlockForValue(height int64, value []byte, currentRound int64) bool {
+	signState.mu.RLock()
+	defer signState.mu.RUnlock()
+
+	heightKey := fmt.Sprintf("%d", height)
+	quorums, exists := signState.PrevoteQuorums[heightKey]
+	if !exists {
+		return false
+	}
+
+	// Check if we have a prevote quorum for this value from a previous round
+	for _, quorum := range quorums {
+		if bytes.Equal(quorum.Value, value) && quorum.Round < currentRound {
+			return true
+		}
+	}
+
+	return false
+}
+
+// cleanupOldPrevoteQuorums removes prevote quorums from heights older than the current height
+func (signState *SignState) cleanupOldPrevoteQuorums(currentHeight int64) {
+	signState.mu.Lock()
+	defer signState.mu.Unlock()
+
+	if signState.PrevoteQuorums == nil {
+		return
+	}
+
+	// Remove prevote quorums from heights older than current height
+	// Keep only the current height and recent heights (within blocksToCache)
+	for heightKey := range signState.PrevoteQuorums {
+		var height int64
+		_, err := fmt.Sscanf(heightKey, "%d", &height)
+		if err != nil || height < currentHeight-blocksToCache {
+			delete(signState.PrevoteQuorums, heightKey)
+		}
+	}
+}
+
+// ValidateConsensusLockWithForceUnlock checks if the requested signing operation violates any existing consensus lock
+// Uses sophisticated consensus state validation instead of simple forceUnlock boolean
+func (signState *SignState) ValidateConsensusLockWithForceUnlock(hrs HRSKey, signBytes []byte, forceUnlock bool) error {
+	signState.mu.RLock()
+	defer signState.mu.RUnlock()
+
+	// If no consensus lock exists, allow signing
+	if !signState.ConsensusLock.IsLocked() {
+		return nil
+	}
+
+	// If we're signing for a different height, the lock is no longer relevant
+	if hrs.Height != signState.ConsensusLock.Height {
+		return nil
+	}
+
+	// For PROPOSAL and PREVOTE messages in rounds R' >= locked_round, only allow signing for the locked value V
+	// We use the stored round from the consensus lock for validation
+	if (hrs.Step == stepPropose || hrs.Step == stepPrevote) && hrs.Round >= signState.ConsensusLock.Round {
+		// Extract the block hash from the sign bytes to compare with the locked value
+		blockHash, err := extractBlockHashFromSignBytes(signBytes, hrs.Step)
+		if err != nil {
+			return newBlockHashExtractionError(hrs.Step, err)
+		}
+
+		// Check if we're trying to sign a different value than what we're locked on
+		if !bytes.Equal(blockHash, signState.ConsensusLock.Value) {
+			// For PREVOTE, check if we can unlock based on prevote quorums
+			if hrs.Step == stepPrevote {
+				// Check if we have prevote quorum information for this height
+				heightKey := fmt.Sprintf("%d", hrs.Height)
+				_, exists := signState.PrevoteQuorums[heightKey]
+
+				if exists && signState.CanUnlockForValue(hrs.Height, blockHash, hrs.Round) {
+					// We have consensus justification - allow signing different value
+					return nil
+				}
+
+				// Backwards compatibility: if no prevote quorum information is available,
+				// be conservative and block signing (safer approach)
+				// This ensures old Tendermint versions don't accidentally allow invalid signing
+				if !exists {
+					// No prevote quorum information available - block signing for safety
+					return newConsensusLockViolationError(
+						signState.ConsensusLock.Value,
+						blockHash,
+						signState.ConsensusLock.Height,
+						signState.ConsensusLock.Round,
+					)
+				}
+			}
+
+			// No consensus justification or not PREVOTE - block the signing
 			return newConsensusLockViolationError(
 				signState.ConsensusLock.Value,
 				blockHash,
