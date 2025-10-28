@@ -6,14 +6,15 @@ package proto
 import (
 	context "context"
 	fmt "fmt"
+	io "io"
+	math "math"
+	math_bits "math/bits"
+
 	grpc1 "github.com/cosmos/gogoproto/grpc"
 	proto "github.com/cosmos/gogoproto/proto"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
-	io "io"
-	math "math"
-	math_bits "math/bits"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -34,6 +35,7 @@ type Block struct {
 	SignBytes        []byte `protobuf:"bytes,4,opt,name=signBytes,proto3" json:"signBytes,omitempty"`
 	VoteExtSignBytes []byte `protobuf:"bytes,5,opt,name=voteExtSignBytes,proto3" json:"voteExtSignBytes,omitempty"`
 	Timestamp        int64  `protobuf:"varint,6,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
+	PolRound         int64  `protobuf:"varint,7,opt,name=pol_round,json=polRound,proto3" json:"pol_round,omitempty"`
 }
 
 func (m *Block) Reset()         { *m = Block{} }

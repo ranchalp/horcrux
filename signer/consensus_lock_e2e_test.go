@@ -63,34 +63,34 @@ func TestConsensusLockE2E(t *testing.T) {
 	// Test 1: Validator tries to sign a PROPOSAL for the same block in a later round
 	// This should be allowed (same value)
 	sameBlockProposal := createTestSignBytesE2E(lockedBlockHash, stepPropose)
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, sameBlockProposal)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, sameBlockProposal, -2)
 	require.NoError(t, err, "Should allow PROPOSAL for same block in later round")
 
 	// Test 2: Validator tries to sign a PREVOTE for the same block in a later round
 	// This should be allowed (same value)
 	sameBlockPrevote := createTestSignBytesE2E(lockedBlockHash, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockPrevote)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockPrevote, -2)
 	require.NoError(t, err, "Should allow PREVOTE for same block in later round")
 
 	// Test 3: Validator tries to sign a PROPOSAL for a different block in a later round
 	// This should be blocked (different value)
 	differentBlockHash := []byte("different_block_hash_123456789012345678901234567890")[:32]
 	differentBlockProposal := createTestSignBytesE2E(differentBlockHash, stepPropose)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, differentBlockProposal)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, differentBlockProposal, -2)
 	require.Error(t, err, "Should block PROPOSAL for different block in later round")
 	require.True(t, IsConsensusLockViolationError(err), "Should be a consensus lock violation error")
 
 	// Test 4: Validator tries to sign a PREVOTE for a different block in a later round
 	// This should be blocked (different value)
 	differentBlockPrevote := createTestSignBytesE2E(differentBlockHash, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockPrevote)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockPrevote, -2)
 	require.Error(t, err, "Should block PREVOTE for different block in later round")
 	require.True(t, IsConsensusLockViolationError(err), "Should be a consensus lock violation error")
 
 	// Test 5: Validator tries to sign a PRECOMMIT for a different block in a later round
 	// This should be allowed (PRECOMMIT releases the lock)
 	differentBlockPrecommit := createTestSignBytesE2E(differentBlockHash, stepPrecommit)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, differentBlockPrecommit)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, differentBlockPrecommit, -2)
 	require.NoError(t, err, "Should allow PRECOMMIT for different block in later round (releases lock)")
 
 	// Test 6: After signing a PRECOMMIT for a different block, the lock should be updated
@@ -104,12 +104,12 @@ func TestConsensusLockE2E(t *testing.T) {
 	// Test 7: Validator tries to sign for a different height
 	// This should be allowed (locks are height-specific)
 	differentHeightBytes := createTestSignBytesE2E(differentBlockHash, stepPropose)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 1, Step: stepPropose}, differentHeightBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 1, Step: stepPropose}, differentHeightBytes, -2)
 	require.NoError(t, err, "Should allow signing for different height")
 
 	// Test 8: Validator tries to sign for the same height but earlier round
 	// This should be allowed (locks only apply to later rounds)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 4, Step: stepPropose}, differentHeightBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 4, Step: stepPropose}, differentHeightBytes, -2)
 	require.NoError(t, err, "Should allow signing for earlier round")
 }
 
@@ -137,19 +137,19 @@ func TestConsensusLockRealWorldScenario(t *testing.T) {
 
 	// Validator should NOT be able to sign PROPOSAL for block B
 	blockBProposal := createTestSignBytesE2E(blockB, stepPropose)
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, blockBProposal)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, blockBProposal, -2)
 	require.Error(t, err, "Should block PROPOSAL for block B")
 	require.True(t, IsConsensusLockViolationError(err), "Should be a consensus lock violation")
 
 	// Validator should NOT be able to sign PREVOTE for block B
 	blockBPrevote := createTestSignBytesE2E(blockB, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, blockBPrevote)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, blockBPrevote, -2)
 	require.Error(t, err, "Should block PREVOTE for block B")
 	require.True(t, IsConsensusLockViolationError(err), "Should be a consensus lock violation")
 
 	// Validator should be able to sign PRECOMMIT for block B (this releases the lock)
 	blockBPrecommit := createTestSignBytesE2E(blockB, stepPrecommit)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, blockBPrecommit)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, blockBPrecommit, -2)
 	require.NoError(t, err, "Should allow PRECOMMIT for block B (releases lock)")
 
 	// After signing PRECOMMIT for block B, validator should be locked on block B
@@ -163,7 +163,7 @@ func TestConsensusLockRealWorldScenario(t *testing.T) {
 
 	// Now validator should NOT be able to sign for block A in round 7
 	blockAProposal := createTestSignBytesE2E(lockedBlockA, stepPropose)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 7, Step: stepPropose}, blockAProposal)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 7, Step: stepPropose}, blockAProposal, -2)
 	require.Error(t, err, "Should block PROPOSAL for block A in round 7")
 	require.True(t, IsConsensusLockViolationError(err), "Should be a consensus lock violation")
 }
@@ -187,7 +187,7 @@ func TestConsensusLockPerformanceE2E(t *testing.T) {
 	// Test that validation is fast (should complete in < 1ms per operation)
 	start := time.Now()
 	for i := 0; i < 10000; i++ {
-		err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, blockBytes)
+		err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, blockBytes, -2)
 		require.Error(t, err) // Should always fail due to lock violation
 	}
 	duration := time.Since(start)

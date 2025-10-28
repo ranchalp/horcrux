@@ -54,7 +54,7 @@ func TestConsensusLockBasic(t *testing.T) {
 
 	// Test that no lock means no validation error
 	blockBytes := []byte("some_block_data_123456789012345678901234567890")
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, blockBytes)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, blockBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error when no lock exists, got: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestConsensusLockValidationWithLock(t *testing.T) {
 
 	// Test 1: Try to sign the same block at same round (should succeed)
 	sameBlockBytes := createTestSignBytes(lockedValue[:32], stepPrevote)
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, sameBlockBytes)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, sameBlockBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error when signing same block at same round, got: %v", err)
 	}
@@ -108,33 +108,33 @@ func TestConsensusLockValidationWithLock(t *testing.T) {
 	// Test 2: Try to sign a different block at the same round (should fail for PROPOSAL/PREVOTE)
 	differentBlockHash := []byte("different_block_hash_123456789012345678901234567890")[:32]
 	differentBlockBytes := createTestSignBytes(differentBlockHash, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, differentBlockBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, differentBlockBytes, -2)
 	if err == nil {
 		t.Error("Expected error when signing different block at same round, got nil")
 	}
 
 	// Test 3: Try to sign the locked value at a later round (should succeed)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error when signing locked value at later round, got: %v", err)
 	}
 
 	// Test 4: Try to sign a different value at a later round (should fail for PROPOSAL/PREVOTE)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes, -2)
 	if err == nil {
 		t.Error("Expected error when signing different value at later round, got nil")
 	}
 
 	// Test 5: Try to sign PRECOMMIT at later round (should succeed - releases lock)
 	precommitBytes := createTestSignBytes(differentBlockHash, stepPrecommit)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, precommitBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrecommit}, precommitBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error when signing PRECOMMIT at later round, got: %v", err)
 	}
 
 	// Test 6: Try to sign at a different height (should succeed - lock is released)
 	differentHeightBytes := createTestSignBytes(differentBlockHash, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error when signing at different height, got: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestConsensusLockErrorTypes(t *testing.T) {
 	// Test that we get a ConsensusLockViolationError for conflicting values
 	differentBlockHash := []byte("different_block_hash_123456789012345678901234567890")[:32]
 	differentBlockBytes := createTestSignBytes(differentBlockHash, stepPrevote)
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, differentBlockBytes, -2)
 	if err == nil {
 		t.Error("Expected consensus lock violation error, got nil")
 	}
@@ -175,14 +175,14 @@ func TestConsensusLockErrorTypes(t *testing.T) {
 
 	// Test that we don't get an error for the same value
 	sameBlockBytes := createTestSignBytes(lockedValue[:32], stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPrevote}, sameBlockBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error for same value, got: %v", err)
 	}
 
 	// Test that we don't get an error for different height
 	differentHeightBytes := createTestSignBytes(differentBlockHash, stepPrevote)
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 5, Step: stepPrevote}, differentHeightBytes, -2)
 	if err != nil {
 		t.Errorf("Expected no error for different height, got: %v", err)
 	}

@@ -68,6 +68,7 @@ func VoteToBlock(chainID string, vote *cometproto.Vote) Block {
 		SignBytes:              comet.VoteSignBytes(chainID, vote),
 		VoteExtensionSignBytes: comet.VoteExtensionSignBytes(chainID, vote),
 		Timestamp:              vote.Timestamp,
+		PolRound:               -2, // Sentinel value: POL round not sent by Tendermint (old version)
 	}
 }
 
@@ -82,6 +83,7 @@ func ProposalToBlock(chainID string, proposal *cometproto.Proposal) Block {
 		Step:      ProposalToStep(proposal),
 		SignBytes: comet.ProposalSignBytes(chainID, proposal),
 		Timestamp: proposal.Timestamp,
+		PolRound:  -2, // not needed here
 	}
 }
 
@@ -105,6 +107,29 @@ type ConsensusLock struct {
 	Value  []byte `json:"value,omitempty"` // The value we're locked on (lockedValue)
 }
 
+// MarshalJSON implements custom JSON marshaling for ConsensusLock
+func (cl ConsensusLock) MarshalJSON() ([]byte, error) {
+	if !cl.IsLocked() {
+		return []byte("null"), nil
+	}
+
+	// Use type alias to avoid infinite recursion
+	type Alias ConsensusLock
+	return cometjson.Marshal(Alias(cl))
+}
+
+// UnmarshalJSON implements custom JSON unmarshaling for ConsensusLock
+func (cl *ConsensusLock) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*cl = ConsensusLock{}
+		return nil
+	}
+
+	// Use type alias to avoid infinite recursion
+	type Alias ConsensusLock
+	return cometjson.Unmarshal(data, (*Alias)(cl))
+}
+
 // IsLocked returns true if there is an active consensus lock
 func (lock *ConsensusLock) IsLocked() bool {
 	return lock.Height >= 0 && lock.Round >= 0 && lock.Value != nil
@@ -121,7 +146,7 @@ type SignState struct {
 	VoteExtensionSignature []byte              `json:"vote_ext_signature,omitempty"`
 
 	// Consensus lock tracking to prevent amnesia faults
-	ConsensusLock ConsensusLock `json:"consensus_lock"`
+	ConsensusLock ConsensusLock `json:"consensus_lock,omitzero"`
 
 	filePath string
 
@@ -136,7 +161,7 @@ func (signState *SignState) existingSignatureOrErrorIfRegression(hrst HRSTKey, s
 	defer signState.mu.RUnlock()
 
 	// First check for consensus lock violations
-	if err := signState.ValidateConsensusLock(hrst.HRSKey(), signBytes); err != nil {
+	if err := signState.ValidateConsensusLock(hrst.HRSKey(), signBytes, -2); err != nil {
 		return nil, err
 	}
 
@@ -203,15 +228,19 @@ func NewSignStateConsensus(height int64, round int64, step int8) SignStateConsen
 }
 
 type ConflictingDataError struct {
-	msg string
+	ExistingSignBytes []byte
+	NewSignBytes      []byte
 }
 
-func (e *ConflictingDataError) Error() string { return e.msg }
+func (e *ConflictingDataError) Error() string {
+	return fmt.Sprintf("conflicting data. existing: %s - new: %s",
+		hex.EncodeToString(e.ExistingSignBytes), hex.EncodeToString(e.NewSignBytes))
+}
 
 func newConflictingDataError(existingSignBytes, newSignBytes []byte) *ConflictingDataError {
 	return &ConflictingDataError{
-		msg: fmt.Sprintf("conflicting data. existing: %s - new: %s",
-			hex.EncodeToString(existingSignBytes), hex.EncodeToString(newSignBytes)),
+		ExistingSignBytes: existingSignBytes,
+		NewSignBytes:      newSignBytes,
 	}
 }
 
@@ -436,14 +465,20 @@ func (signState *SignState) CheckHRS(hrst HRSTKey) (bool, error) {
 }
 
 type SameHRSError struct {
-	msg string
+	Height int64
+	Round  int64
+	Step   int8
 }
 
-func (e *SameHRSError) Error() string { return e.msg }
+func (e *SameHRSError) Error() string {
+	return fmt.Sprintf("HRS is the same as current: %d:%d:%d", e.Height, e.Round, e.Step)
+}
 
 func newSameHRSError(hrs HRSKey) *SameHRSError {
 	return &SameHRSError{
-		msg: fmt.Sprintf("HRS is the same as current: %d:%d:%d", hrs.Height, hrs.Round, hrs.Step),
+		Height: hrs.Height,
+		Round:  hrs.Round,
+		Step:   hrs.Step,
 	}
 }
 
@@ -637,10 +672,14 @@ func newConsensusLockViolationError(
 
 // ConsensusLockStepViolationError represents an error when trying to sign a step that violates consensus lock rules
 type ConsensusLockStepViolationError struct {
-	msg string
+	Height int64
+	Round  int64
+	Step   int8
 }
 
-func (e *ConsensusLockStepViolationError) Error() string { return e.msg }
+func (e *ConsensusLockStepViolationError) Error() string {
+	return fmt.Sprintf("consensus lock step violation at %d:%d:%d", e.Height, e.Round, e.Step)
+}
 
 // IsConsensusLockViolationError checks if the error is a consensus lock violation
 func IsConsensusLockViolationError(err error) bool {
@@ -670,8 +709,9 @@ func IsConsensusLockStepViolationError(err error) bool {
 	return errors.As(err, &stepViolationErr)
 }
 
-// ValidateConsensusLock checks if the requested signing operation violates any existing consensus lock
-func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) error {
+// ValidateConsensusLock validates consensus lock using POL round from Tendermint
+// Tendermint sends POL round in the sign request
+func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte, polRound int64) error {
 	signState.mu.RLock()
 	defer signState.mu.RUnlock()
 
@@ -686,7 +726,6 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 	}
 
 	// For PROPOSAL and PREVOTE messages in rounds R' >= locked_round, only allow signing for the locked value V
-	// We use the stored round from the consensus lock for validation
 	if (hrs.Step == stepPropose || hrs.Step == stepPrevote) && hrs.Round >= signState.ConsensusLock.Round {
 		// Extract the block hash from the sign bytes to compare with the locked value
 		blockHash, err := extractBlockHashFromSignBytes(signBytes, hrs.Step)
@@ -696,6 +735,24 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 
 		// Check if we're trying to sign a different value than what we're locked on
 		if !bytes.Equal(blockHash, signState.ConsensusLock.Value) {
+			// For PREVOTE, check if we can unlock based on POL round
+			if hrs.Step == stepPrevote {
+				// if protomsg without polRound
+				if polRound == -2 {
+					return nil // Allow signing - old Tendermint version
+				}
+
+				// polRound >= 0: New Tendermint version with POL round information
+				if polRound >= 0 {
+					// Check if POL round is greater than locked's
+					if polRound > signState.ConsensusLock.Round {
+						return nil // POL justification
+					}
+					// POL justification is old
+				}
+				// no POL justification
+			}
+
 			return newConsensusLockViolationError(
 				signState.ConsensusLock.Value,
 				blockHash,
@@ -705,8 +762,6 @@ func (signState *SignState) ValidateConsensusLock(hrs HRSKey, signBytes []byte) 
 		}
 	}
 
-	// For PRECOMMIT messages in rounds R' > R, allow signing for any value (this releases the lock)
-	// For same or earlier rounds, allow signing (no additional restrictions)
 	return nil
 }
 

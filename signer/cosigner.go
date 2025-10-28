@@ -54,6 +54,7 @@ type CosignerSignRequest struct {
 	UUID                   uuid.UUID
 	VoteExtensionSignBytes []byte
 	VoteExtUUID            uuid.UUID
+	PolRound               int64 `json:"pol_round,omitempty"`
 }
 
 type CosignerSignResponse struct {

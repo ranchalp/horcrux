@@ -289,6 +289,7 @@ type Block struct {
 	SignBytes              []byte
 	VoteExtensionSignBytes []byte
 	Timestamp              time.Time
+	PolRound               int64 `json:"pol_round,omitempty"`
 }
 
 func (block Block) HRSKey() HRSKey {
@@ -316,6 +317,7 @@ func (block Block) ToProto() *proto.Block {
 		SignBytes:        block.SignBytes,
 		VoteExtSignBytes: block.VoteExtensionSignBytes,
 		Timestamp:        block.Timestamp.UnixNano(),
+		PolRound:         block.PolRound,
 	}
 }
 
@@ -327,6 +329,7 @@ func BlockFromProto(block *proto.Block) Block {
 		SignBytes:              block.SignBytes,
 		VoteExtensionSignBytes: block.VoteExtSignBytes,
 		Timestamp:              time.Unix(0, block.Timestamp),
+		PolRound:               block.PolRound,
 	}
 }
 
@@ -672,9 +675,12 @@ func (pv *ThresholdValidator) Sign(
 		Timestamp: stamp.UnixNano(),
 	}
 
-	// Check for consensus lock violations before proceeding
+	// Get chain state for consensus lock validation
 	css := pv.mustLoadChainState(chainID)
-	if err := css.lastSignState.ValidateConsensusLock(block.HRSKey(), signBytes); err != nil {
+
+	// Check for consensus lock violations before proceeding
+	// Use POL round validation
+	if err := css.lastSignState.ValidateConsensusLock(block.HRSKey(), signBytes, block.PolRound); err != nil {
 		// Log the specific consensus lock violation with detailed context
 		log.Error("Consensus lock violation detected in threshold validator",
 			"chain_id", chainID,

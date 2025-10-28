@@ -19,25 +19,25 @@ func TestConsensusLockIntegration(t *testing.T) {
 
 	// Test that we can sign a PROPOSAL without issues
 	proposalBytes := []byte("proposal_block_hash_123456789012345678901234567890")
-	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPropose}, proposalBytes)
+	err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPropose}, proposalBytes, -2)
 	require.NoError(t, err, "Should allow PROPOSAL signing when no lock exists")
 
 	// Test that we can sign a PREVOTE without issues
 	prevoteBytes := []byte("prevote_block_hash_123456789012345678901234567890")
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, prevoteBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrevote}, prevoteBytes, -2)
 	require.NoError(t, err, "Should allow PREVOTE signing when no lock exists")
 
 	// Test that we can sign a PRECOMMIT without issues
 	precommitBytes := []byte("precommit_block_hash_123456789012345678901234567890")
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, precommitBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPrecommit}, precommitBytes, -2)
 	require.NoError(t, err, "Should allow PRECOMMIT signing when no lock exists")
 
 	// Test that we can sign at different heights without issues
-	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 1, Step: stepPropose}, proposalBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 101, Round: 1, Step: stepPropose}, proposalBytes, -2)
 	require.NoError(t, err, "Should allow signing at different height")
 
 	// Test that we can sign at different rounds within same height without issues
-	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, proposalBytes)
+	err = signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 6, Step: stepPropose}, proposalBytes, -2)
 	require.NoError(t, err, "Should allow signing at different round within same height")
 }
 
@@ -55,7 +55,7 @@ func TestConsensusLockPerformance(t *testing.T) {
 	// Test that validation is fast (should complete in < 1ms)
 	start := time.Now()
 	for i := 0; i < 1000; i++ {
-		err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPropose}, blockBytes)
+		err := signState.ValidateConsensusLock(HRSKey{Height: 100, Round: 5, Step: stepPropose}, blockBytes, -2)
 		require.NoError(t, err)
 	}
 	duration := time.Since(start)

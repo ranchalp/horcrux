@@ -220,13 +220,15 @@ func (cosigner *LocalCosigner) sign(req CosignerSignRequest) (CosignerSignRespon
 	}
 
 	// Check for consensus lock violations before proceeding
-	if err := ccs.lastSignState.ValidateConsensusLock(hrst.HRSKey(), req.SignBytes); err != nil {
+	// Use POL round validation
+	if err := ccs.lastSignState.ValidateConsensusLock(hrst.HRSKey(), req.SignBytes, req.PolRound); err != nil {
 		// Log the specific consensus lock violation with context
 		cosigner.logger.Error("Consensus lock violation in local cosigner",
 			"chain_id", chainID,
 			"height", hrst.Height,
 			"round", hrst.Round,
 			"step", hrst.Step,
+			"pol_round", req.PolRound,
 			"error", err,
 		)
 		// Return the specific consensus lock violation error with full details

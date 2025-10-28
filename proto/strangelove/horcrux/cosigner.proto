@@ -19,6 +19,7 @@ message Block {
 	bytes signBytes = 4;
 	bytes voteExtSignBytes = 5;
 	int64 timestamp = 6;
+	int64 pol_round = 7;
 }
 
 message SignBlockRequest {
